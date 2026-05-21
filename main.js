@@ -1,19 +1,22 @@
 // ==UserScript==
 // @name         api purchase
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  direct api call for purchasing
 // @author       pythonplugin
 // @match        https://www.pekora.zip/*
 // @grant        none
 // @run-at       document-end
+// @updateURL    https://raw.githubusercontent.com/pythonpluh/api-purchase/main/main.js
+// @downloadURL  https://raw.githubusercontent.com/pythonpluh/api-purchase/main/main.js
+// @homepageURL  https://github.com/pythonpluh/api-purchase
 // ==/UserScript==
 
 (function () {
     'use strict';
 
     const info = {
-        version: '2.0',
+        version: '2.1',
         author: '@pythonplugin',
     };
 
