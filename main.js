@@ -13,7 +13,7 @@
     'use strict';
 
     const info = {
-        version: '2',
+        version: '2.0',
         author: '@pythonplugin',
     };
 
@@ -28,6 +28,7 @@
     let pendingToken = null;
     let tokenPromise = null;
 
+    // helpers
     const getItemId = () => {
         const match = window.location.pathname.match(/\/catalog\/(\d+)/);
         return match ? match[1] : null;
@@ -116,6 +117,7 @@
 
         return new Promise((resolve, reject) => {
             turnstileCallback = resolve;
+            window.turnstile?.reset?.(turnstileWidget);
             window.turnstile.execute(turnstileWidget);
 
             setTimeout(() => {
@@ -143,7 +145,7 @@
             pendingToken = null;
 
             tokenPromise = getTurnstileToken()
-                .then(token => { pendingToken = token; })
+                .then(token => { pendingToken = token; return token; })
                 .catch(() => null);
 
             return token;
@@ -152,6 +154,7 @@
         return tokenPromise ?? getTurnstileToken();
     };
 
+    // main
     const doHandshake = async (assetId) => {
         const token = await getOrFetchToken();
         if (!token) throw new Error('ts token missing');
@@ -202,12 +205,12 @@
             top: -60px;
             left: 50%;
             z-index: 9999;
-            background: ${isSuccess ? 'rgb(0, 167, 107)' : 'rgb(220, 38, 38)'};
+            background: ${isSuccess ? 'rgb(0, 167, 107)' : 'rgb(214, 91, 91)'};
             color: white;
             padding: 12px 16px;
             width: 100%;
             max-width: 970px;
-            font-family: "Gotham SSm A", "Gotham SSm B", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             font-size: 14px;
             font-weight: 600;
             letter-spacing: 0.5px;
@@ -215,11 +218,13 @@
             box-sizing: border-box;
             transition: top 0.5s;
             transform: translateX(-50%);
-            border-radius: 6px;
             margin: 0;
             display: flex;
             align-items: center;
             justify-content: center;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
         `;
 
         document.body.appendChild(notification);
@@ -235,7 +240,7 @@
 
             setTimeout(() =>
                 notification.remove(),
-            500);
+                500);
         }, 7000);
     };
 
@@ -289,7 +294,7 @@
 
                 setTimeout(() =>
                     location.reload(),
-                1500);
+                    1500);
             } else {
                 notify(`API Purchase failed: ${data.reason || rawText}`, false);
             }
@@ -330,7 +335,7 @@
             border: none;
             border-radius: 6px;
             padding: 8px 16px;
-            font-family: "Gotham SSm A", "Gotham SSm B", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             font-size: 14px;
             font-weight: 600;
             cursor: pointer;
@@ -342,6 +347,9 @@
             align-items: center;
             justify-content: center;
             box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
         `;
 
         button.onmouseenter = () => {
@@ -455,7 +463,9 @@
         window.addEventListener('popstate', onNavigate);
     };
 
-    console.log(`%c
+    // set up
+    const setup = () => {
+        console.log(`%c
 
                             ██                                                       ▄▄
                             ▀▀                                                       ██
@@ -468,23 +478,26 @@
 
      %cversion:%c  ${info.version}                               %cauthor:%c  ${info.author}                               %cloaded in:%c  ${(performance.now() / 1000).toFixed(3)}s
     `,
-        'color: #00a76b;',
-        'color: #ffffff; font-weight: bold; background: #00a76b; padding: 2px 6px; border-radius: 3px;', 'color: #ffffff;',
-        'color: #ffffff; font-weight: bold; background: #00a76b; padding: 2px 6px; border-radius: 3px;', 'color: #ffffff;',
-        'color: #ffffff; font-weight: bold; background: #00a76b; padding: 2px 6px; border-radius: 3px;', 'color: #ffffff;',
-    );
+            'color: #00a76b;',
+            'color: #ffffff; font-weight: bold; background: #00a76b; padding: 2px 6px; border-radius: 3px;', 'color: #ffffff;',
+            'color: #ffffff; font-weight: bold; background: #00a76b; padding: 2px 6px; border-radius: 3px;', 'color: #ffffff;',
+            'color: #ffffff; font-weight: bold; background: #00a76b; padding: 2px 6px; border-radius: 3px;', 'color: #ffffff;',
+        );
 
-    console.log('API purchase initialized, thanks for using this extension!')
+        console.log('API purchase initialized, thanks for using this extension!')
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                start_retry();
+                monitor_button();
+            });
+        } else {
             start_retry();
             monitor_button();
-        });
-    } else {
-        start_retry();
-        monitor_button();
-    }
+        }
 
-    history_navigation();
+        history_navigation();
+    };
+
+    setup();
 })();
