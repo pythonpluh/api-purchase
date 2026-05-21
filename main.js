@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         api purchase
 // @namespace    http://tampermonkey.net/
-// @version      2
+// @version      2.0
 // @description  direct api call for purchasing
 // @author       pythonplugin
 // @match        https://www.pekora.zip/*
@@ -16,7 +16,7 @@
     'use strict';
 
     const info = {
-        version: '2',
+        version: '2.0',
         author: '@pythonplugin',
     };
 
