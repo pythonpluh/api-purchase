@@ -117,7 +117,6 @@
 
         return new Promise((resolve, reject) => {
             turnstileCallback = resolve;
-            window.turnstile?.reset?.(turnstileWidget);
             window.turnstile.execute(turnstileWidget);
 
             setTimeout(() => {
@@ -299,7 +298,10 @@
                 notify(`API Purchase failed: ${data.reason || rawText}`, false);
             }
         } catch (error) {
-            notify(`Error: ${error.message}`, false);
+            pendingToken = null;
+            tokenPromise = null;
+            
+            notify(`error: ${error.message}`, false);
         }
     };
 
