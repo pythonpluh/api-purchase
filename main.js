@@ -31,6 +31,8 @@
     let pendingToken = null;
     let tokenPromise = null;
 
+    let cachedCsrf = null;
+
     // helpers
     const getItemId = () => {
         const match = window.location.pathname.match(/\/catalog\/(\d+)/);
@@ -38,15 +40,21 @@
     };
 
     const getCsrf = () => {
+        if (cachedCsrf) return cachedCsrf;
+
         for (const cookie of document.cookie.split(';')) {
             const [name, value] = cookie.trim().split('=');
+            
             if (name.toLowerCase().includes('csrf')) {
+                cachedCsrf = value;
                 return value;
             }
         }
 
         const meta = document.querySelector('meta[name="csrf-token"]');
-        return meta ? meta.getAttribute('content') : null;
+        cachedCsrf = meta ? meta.getAttribute('content') : null;
+
+        return cachedCsrf;
     };
 
     const getPrice = () => {
@@ -197,14 +205,11 @@
 
     const notify = (message, isSuccess = true) => {
         const notification = document.createElement('div');
-        const label = document.createElement('span');
-
-        label.textContent = message;
-        notification.appendChild(label);
+        notification.textContent = message;
 
         notification.style.cssText = `
             position: fixed;
-            top: -60px;
+            top: 0;
             left: 50%;
             z-index: 9999;
             background: ${isSuccess ? 'rgb(0, 167, 107)' : 'rgb(214, 91, 91)'};
@@ -218,8 +223,8 @@
             letter-spacing: 0.5px;
             text-align: center;
             box-sizing: border-box;
-            transition: top 0.5s;
-            transform: translateX(-50%);
+            transition: transform 0.4s ease;
+            transform: translate(-50%, -100%);
             margin: 0;
             display: flex;
             align-items: center;
@@ -230,41 +235,36 @@
         `;
 
         document.body.appendChild(notification);
+        notification.getBoundingClientRect();
 
         requestAnimationFrame(() => {
             requestAnimationFrame(() => {
-                notification.style.top = '56px';
+                notification.style.transform = 'translate(-50%, 56px)';
             });
         });
 
         setTimeout(() => {
-            notification.style.top = '-60px';
-
-            setTimeout(() =>
-                notification.remove(),
-                500);
+            notification.style.transform = 'translate(-50%, -100%)';
+            notification.addEventListener('transitionend', () => notification.remove(), { once: true });
         }, 7000);
     };
 
     const purchase = async (itemId, price = 0) => {
         try {
-            const [ticket] = await Promise.all([
-                doHandshake(itemId),
-                Promise.resolve(getSellerId()),
-            ]);
+            const sellerId = getSellerId();
+            const ticket = await doHandshake(itemId);
 
             const response = await fetch(
                 `https://www.pekora.zip/apisite/economy/v1/purchases/products/${itemId}`,
                 {
                     method: 'POST',
                     mode: 'same-origin',
-
                     credentials: 'include',
 
                     headers: {
                         'accept': 'application/json, text/plain, */*',
                         'content-type': 'application/json;charset=UTF-8',
-                        'x-csrf-token': getCsrf(),
+                        'x-csrf-token': cachedCsrf || getCsrf(),
                         'x-korone-ticket': ticket,
                         'referer': location.href,
                         'origin': 'https://www.pekora.zip',
@@ -272,9 +272,8 @@
 
                     body: JSON.stringify({
                         assetId: parseInt(itemId),
-
                         expectedPrice: price,
-                        expectedSellerId: getSellerId(),
+                        expectedSellerId: sellerId,
                         expectedCurrency: 1,
 
                         userAssetId: null,
@@ -432,10 +431,17 @@
     const monitor_button = () => {
         if (domObserver) domObserver.disconnect();
 
+        let debounceTimer = null;
         domObserver = new MutationObserver(() => {
-            if (getItemId() && !document.querySelector('#yieldsponsoredbutton')) {
-                purchase_button();
-            }
+            if (debounceTimer) return;
+
+            debounceTimer = setTimeout(() => {
+                debounceTimer = null;
+
+                if (getItemId() && !document.querySelector('#yieldsponsoredbutton')) {
+                    purchase_button();
+                }
+            }, 50);
         });
 
         domObserver.observe(document.body, { childList: true, subtree: true });
@@ -453,6 +459,8 @@
 
             pendingToken = null;
             tokenPromise = null;
+            
+            cachedCsrf = null;
         };
 
         history.pushState = function (...args) {
