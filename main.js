@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         api purchase
 // @namespace    http://tampermonkey.net/
-// @version      1.152
+// @version      2.0
 // @description  direct api call for purchasing
 // @author       pythonplugin
 // @match        https://www.pekora.zip/*
@@ -12,29 +12,33 @@
 (function () {
     'use strict';
 
-    let observer = null;
-    let retryTimer = null;
-
-    let lastUrl = location.href;
-
     const info = {
-        version: '1.152',
+        version: '2',
         author: '@pythonplugin',
     };
 
-    // helpers
+    let lastUrl = location.href;
+
+    let domObserver = null;
+    let retryTimer = null;
+
+    let turnstileCallback = null;
+    let turnstileWidget = null;
+
+    let pendingToken = null;
+    let tokenPromise = null;
+
     const getItemId = () => {
-        const m = window.location.pathname.match(/\/catalog\/(\d+)/);
-        return m ? m[1] : null;
+        const match = window.location.pathname.match(/\/catalog\/(\d+)/);
+        return match ? match[1] : null;
     };
 
     const getCsrf = () => {
-        const cookies = document.cookie.split(';');
-
-        for (let cookie of cookies) {
+        for (const cookie of document.cookie.split(';')) {
             const [name, value] = cookie.trim().split('=');
-
-            if (name.toLowerCase().includes('csrf')) return value;
+            if (name.toLowerCase().includes('csrf')) {
+                return value;
+            }
         }
 
         const meta = document.querySelector('meta[name="csrf-token"]');
@@ -42,132 +46,284 @@
     };
 
     const getPrice = () => {
-        const label = document.querySelector('.priceLabel-0-2-61') ||
-                      document.querySelector('[class*="priceLabel"]');
-        if (!label) return 0;
-    
-        const text = label.textContent.trim();
-    
-        const cleaned = text.replace(/[^\d]/g, '');
+        const label =
+            document.querySelector('.priceLabel-0-2-61') ||
+            document.querySelector('[class*="priceLabel"]');
+
+        if (!label) {
+            return 0;
+        }
+
+        const cleaned = label.textContent.trim().replace(/[^\d]/g, '');
         return cleaned ? parseInt(cleaned, 10) : 0;
-    };    
+    };
 
     const getSellerId = () => {
         const sellerLink = document.querySelector('a[href*="/User.aspx?ID="]');
         if (sellerLink) {
             const match = sellerLink.href.match(/ID=(\d+)/);
-            if (match) return parseInt(match[1]);
+            if (match) {
+                return parseInt(match[1]);
+            }
         }
 
         return 1;
     };
 
-    // main
-    const notify = (msg, ok = true) => {
-        const toast = document.createElement('div');
-        toast.textContent = msg;
+    const initializeTurnstile = () => {
+        const container = document.createElement('div');
+        container.style.cssText = 'position: fixed; opacity: 0; pointer-events: none; z-index: -9999';
 
-        toast.style.cssText = `
-            position: fixed;
-            bottom: -60px;
-            right: 20px;
-            z-index: 9999;
-            background: ${ok ? 'rgba(0, 167, 107, 0.95)' : 'rgba(195, 66, 66, 0.95)'};
-            backdrop-filter: blur(6px);
-            color: white;
-            padding: 12px 18px;
-            border-radius: 8px;
-            border: 1px solid ${ok ? '#009963' : '#9b2f2f'};
-            font-family: "Gotham SSm A", "Gotham SSm B", "Helvetica Neue", Helvetica, Arial, sans-serif;
-            font-size: 13px;
-            font-weight: 500;
-            letter-spacing: 0.2px;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.25);
-            transition: bottom 0.5s ease, opacity 0.4s ease;
-            opacity: 0;
-            text-transform: lowercase;
-        `;
+        document.body.appendChild(container);
 
-        document.body.appendChild(toast);
+        turnstileWidget = window.turnstile.render(container, {
+            sitekey: '0x4AAAAAADQcZgwHYAGOlwRV', // lol
 
-        setTimeout(() => {
-            toast.style.bottom = '30px';
-            toast.style.opacity = '1';
-        }, 50);
+            appearance: 'execute',
+            execution: 'execute',
 
-        setTimeout(() => {
-            toast.style.bottom = '-60px';
-            toast.style.opacity = '0';
-            
-            setTimeout(() => toast.remove(), 600);
-        }, 3500);
+            callback: (token) => {
+                if (turnstileCallback) {
+                    turnstileCallback(token);
+                    turnstileCallback = null;
+                }
+            },
+
+            'error-callback': () => {
+                if (turnstileCallback) {
+                    turnstileCallback(null);
+                    turnstileCallback = null;
+                }
+            },
+        });
     };
 
-    const purchase = async (id, price = 0) => {
-        const csrf = getCsrf();
-    
-        try {
-            const res = await fetch(`https://www.pekora.zip/apisite/economy/v1/purchases/products/${id}`, {
+    const getTurnstileToken = async () => {
+        const deadline = Date.now() + 8000;
+
+        while (Date.now() < deadline) {
+            if (window.turnstile?.render) {
+                if (!turnstileWidget) initializeTurnstile();
+                break;
+            }
+
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+
+        if (!turnstileWidget || !window.turnstile?.execute) {
+            throw new Error('turnstile not ready');
+        }
+
+        return new Promise((resolve, reject) => {
+            turnstileCallback = resolve;
+            window.turnstile.execute(turnstileWidget);
+
+            setTimeout(() => {
+                if (turnstileCallback === resolve) {
+                    turnstileCallback = null;
+                    reject(new Error('turnstile timeout'));
+                }
+            }, 8000);
+        });
+    };
+
+    const prefetchToken = () => {
+        tokenPromise = getTurnstileToken()
+            .then(token => {
+                pendingToken = token;
+                return token;
+            })
+
+            .catch(() => null);
+    };
+
+    const getOrFetchToken = async () => {
+        if (pendingToken) {
+            const token = pendingToken;
+            pendingToken = null;
+
+            tokenPromise = getTurnstileToken()
+                .then(token => { pendingToken = token; })
+                .catch(() => null);
+
+            return token;
+        }
+
+        return tokenPromise ?? getTurnstileToken();
+    };
+
+    const doHandshake = async (assetId) => {
+        const token = await getOrFetchToken();
+        if (!token) throw new Error('ts token missing');
+
+        const response = await fetch(
+            `https://www.pekora.zip/apisite/economy/v1/purchases/products/${assetId}/handshake`,
+            {
                 method: 'POST',
                 mode: 'same-origin',
                 credentials: 'include',
 
                 headers: {
                     'accept': 'application/json, text/plain, */*',
-                    'content-type': 'application/json;charset=UTF-8',
-                    'x-csrf-token': csrf,
+                    'content-type': 'application/json',
+                    'x-csrf-token': getCsrf(),
+                    'origin': 'https://www.pekora.zip',
                     'referer': location.href,
-                    'origin': 'https://www.pekora.zip'
                 },
 
-                body: JSON.stringify({
-                    assetId: parseInt(id),
-                    expectedPrice: price,
-                    expectedSellerId: getSellerId(),
-                    expectedCurrency: 1,
-                    userAssetId: null
-                })
-            });
-    
-            const text = await res.text();
-            
-            let data = {};
-            try { data = JSON.parse(text); } catch {}
-            
-            if (res.ok && data.purchased) {
-                notify('purchase successful');
-                setTimeout(() => location.reload(), 1500);
-            } else {
-                notify(`failed: ${data.reason || text}`, false);
+                body: JSON.stringify({ tToken: token }),
             }
-        } catch (err) {
-            notify(`failed: ${err.message}`, false);
+        );
+
+        if (!response.ok) throw new Error(`handshake failed: ${response.status}`);
+
+        const data = await response.json();
+        const ticket =
+            data.ticket ||
+            data.koroneTicket ||
+            data.xKoroneTicket ||
+            data.token ||
+            data.nonce;
+
+        if (!ticket) throw new Error(`no ticket: ${JSON.stringify(data)}`);
+
+        return ticket;
+    };
+
+    const notify = (message, isSuccess = true) => {
+        const notification = document.createElement('div');
+        const label = document.createElement('span');
+
+        label.textContent = message;
+        notification.appendChild(label);
+
+        notification.style.cssText = `
+            position: fixed;
+            top: -60px;
+            left: 50%;
+            z-index: 9999;
+            background: ${isSuccess ? 'rgb(0, 167, 107)' : 'rgb(220, 38, 38)'};
+            color: white;
+            padding: 12px 16px;
+            width: 100%;
+            max-width: 970px;
+            font-family: "Gotham SSm A", "Gotham SSm B", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-align: center;
+            box-sizing: border-box;
+            transition: top 0.5s;
+            transform: translateX(-50%);
+            border-radius: 6px;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        `;
+
+        document.body.appendChild(notification);
+
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                notification.style.top = '56px';
+            });
+        });
+
+        setTimeout(() => {
+            notification.style.top = '-60px';
+
+            setTimeout(() =>
+                notification.remove(),
+            500);
+        }, 7000);
+    };
+
+    const purchase = async (itemId, price = 0) => {
+        try {
+            const [ticket] = await Promise.all([
+                doHandshake(itemId),
+                Promise.resolve(getSellerId()),
+            ]);
+
+            const response = await fetch(
+                `https://www.pekora.zip/apisite/economy/v1/purchases/products/${itemId}`,
+                {
+                    method: 'POST',
+                    mode: 'same-origin',
+
+                    credentials: 'include',
+
+                    headers: {
+                        'accept': 'application/json, text/plain, */*',
+                        'content-type': 'application/json;charset=UTF-8',
+                        'x-csrf-token': getCsrf(),
+                        'x-korone-ticket': ticket,
+                        'referer': location.href,
+                        'origin': 'https://www.pekora.zip',
+                    },
+
+                    body: JSON.stringify({
+                        assetId: parseInt(itemId),
+
+                        expectedPrice: price,
+                        expectedSellerId: getSellerId(),
+                        expectedCurrency: 1,
+
+                        userAssetId: null,
+                    }),
+                }
+            );
+
+            const rawText = await response.text();
+            let data = {};
+
+            try {
+                data = JSON.parse(rawText);
+            } catch {
+                console.log('ok fuck you');
+            }
+
+            if (response.ok && data.purchased) {
+                notify('API Purchase completed');
+
+                setTimeout(() =>
+                    location.reload(),
+                1500);
+            } else {
+                notify(`API Purchase failed: ${data.reason || rawText}`, false);
+            }
+        } catch (error) {
+            notify(`Error: ${error.message}`, false);
         }
     };
-    
 
     const purchase_button = () => {
-        const id = getItemId();
-        if (!id) return false;
+        const itemId = getItemId();
+        if (!itemId) return false;
 
-        if (document.querySelector('#bypbtn')) return true;
+        if (document.querySelector('#yieldsponsoredbutton')) return true;
 
-        const buyButton =
-            document.querySelector('button.newBuyButton-0-2-58') ||
-            document.querySelector('button[class*="newBuyButton"]') ||
-            document.querySelector('button[class*="buyBtn"]');
+        const buyButton = document.querySelector('button[class*="buyBtn"]');
+        if (
+            !buyButton ||
+            buyButton.disabled ||
+            buyButton.textContent.toLowerCase().includes('edit avatar')
+        ) {
+            return false;
+        }
 
-        if (!buyButton || buyButton.disabled || buyButton.textContent.toLowerCase().includes('edit avatar')) return false;
+        const buttonContainer = buyButton.parentElement;
+        if (!buttonContainer) return false;
 
-        const container = buyButton.parentElement;
-        if (!container) return false;
+        prefetchToken();
 
-        const btn = document.createElement('button');
-        btn.id = 'bypbtn';
-        btn.type = 'button';
-        btn.textContent = 'api buy';
+        const button = document.createElement('button');
+        button.id = 'yieldsponsoredbutton';
+        button.type = 'button';
+        button.textContent = 'API Purchase';
 
-        btn.style.cssText = `
+        button.style.cssText = `
             background: rgb(0, 167, 107) !important;
             color: white !important;
             margin-top: 6px;
@@ -180,7 +336,6 @@
             cursor: pointer;
             width: 100%;
             height: 40px;
-            text-transform: uppercase;
             letter-spacing: 0.5px;
             transition: all 0.25s ease;
             display: flex;
@@ -189,56 +344,58 @@
             box-shadow: 0 2px 4px rgba(0,0,0,0.2);
         `;
 
-        btn.onmouseenter = () => {
-            if (!btn.disabled) {
-                btn.style.background = 'rgb(0, 153, 99) !important';
-                btn.style.transform = 'translateY(-1px)';
-                btn.style.boxShadow = '0 3px 6px rgba(0,0,0,0.25)';
+        button.onmouseenter = () => {
+            if (!button.disabled) {
+                button.style.background = 'rgb(0, 132, 86)';
+                button.style.boxShadow = '0 3px 6px rgba(0, 0, 0, 0.25)';
             }
         };
 
-        btn.onmouseleave = () => {
-            if (!btn.disabled) {
-                btn.style.background = 'rgb(0, 167, 107) !important';
-                btn.style.transform = 'translateY(0)';
-                btn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
+        button.onmouseleave = () => {
+            if (!button.disabled) {
+                button.style.background = 'rgb(0, 167, 107)';
+                button.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
             }
         };
 
-        btn.onclick = async (e) => {
-            e.preventDefault();
+        button.onclick = async (event) => {
+            event.preventDefault();
 
-            if (btn.disabled) return;
-            btn.disabled = true;
+            if (button.disabled) return;
 
-            btn.textContent = 'processing...';
-
-            btn.style.background = '#888 !important';
-            btn.style.cursor = 'not-allowed';
-            btn.style.opacity = '0.75';
-            btn.style.transform = 'scale(0.97)';
-            btn.style.boxShadow = 'none';
+            button.disabled = true;
+            button.textContent = 'Processing...';
+            button.style.background = '#888 !important';
+            button.style.cursor = 'not-allowed';
+            button.style.opacity = '0.75';
+            button.style.transform = 'scale(0.97)';
+            button.style.boxShadow = 'none';
 
             try {
                 await purchase(getItemId(), getPrice());
             } finally {
-                btn.disabled = false;
-
-                btn.textContent = 'api buy';
-
-                btn.style.background = 'rgb(0, 167, 107) !important';
-                btn.style.cursor = 'pointer';
-                btn.style.opacity = '1';
-                btn.style.transform = 'scale(1)';
-                btn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
+                button.disabled = false;
+                button.textContent = 'API Purchase';
+                button.style.background = 'rgb(0, 167, 107) !important';
+                button.style.cursor = 'pointer';
+                button.style.opacity = '1';
+                button.style.transform = 'scale(1)';
+                button.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
             }
         };
 
-        container.appendChild(btn);
+        // dis got into the way with the button so i jus moved it down a lil
+        const saleClock = buttonContainer.querySelector('[class*="saleClockContainer"]');
+        if (saleClock) {
+            saleClock.style.cssText += '; position: relative; top: auto; left: auto; right: auto; bottom: auto;';
+            buttonContainer.insertBefore(button, saleClock);
+        } else {
+            buttonContainer.appendChild(button);
+        }
+
         return true;
     };
 
-    // init
     const start_retry = () => {
         if (retryTimer) {
             clearTimeout(retryTimer);
@@ -246,24 +403,12 @@
         }
 
         let attempts = 0;
-        const maxAttempts = 20;
-
         const retry = () => {
-            const id = getItemId();
+            if (!getItemId()) return;
 
-            if (!id) {
-                return;
-            }
+            if (purchase_button()) return;
 
-            const success = purchase_button();
-
-            if (success) {
-                return;
-            }
-
-            attempts++;
-
-            if (attempts < maxAttempts) {
+            if (++attempts < 20) {
                 retryTimer = setTimeout(retry, 300);
             }
         };
@@ -272,67 +417,64 @@
     };
 
     const monitor_button = () => {
-        if (observer) {
-            observer.disconnect();
-        }
+        if (domObserver) domObserver.disconnect();
 
-        observer = new MutationObserver(() => {
-            const id = getItemId();
-
-            if (id && !document.querySelector('#bypbtn')) {
+        domObserver = new MutationObserver(() => {
+            if (getItemId() && !document.querySelector('#yieldsponsoredbutton')) {
                 purchase_button();
             }
         });
 
-        observer.observe(document.body, { childList: true, subtree: true });
+        domObserver.observe(document.body, { childList: true, subtree: true });
     };
 
     const history_navigation = () => {
-        const pushState = history.pushState;
-        const replaceState = history.replaceState;
+        const originalPushState = history.pushState;
+        const originalReplaceState = history.replaceState;
 
-        const handler = () => {
+        const onNavigate = () => {
             const currentUrl = location.href;
             if (currentUrl === lastUrl) return;
 
             lastUrl = currentUrl;
 
-            setTimeout(() => {
-                start_retry();
-            }, 100);
+            pendingToken = null;
+            tokenPromise = null;
         };
 
         history.pushState = function (...args) {
-            pushState.apply(this, args);
-            handler();
+            originalPushState.apply(this, args);
+            onNavigate();
         };
 
         history.replaceState = function (...args) {
-            replaceState.apply(this, args);
-            handler();
+            originalReplaceState.apply(this, args);
+            onNavigate();
         };
 
-        window.addEventListener('popstate', handler);
+        window.addEventListener('popstate', onNavigate);
     };
 
-    // setup    
-    console.log(`
-                                                                                                                                            
-                            ██                                                       ▄▄                                                         
-                            ▀▀                                                       ██                                                         
-      ▄█████▄  ██▄███▄    ████               ██▄███▄   ██    ██   ██▄████   ▄█████▄  ██▄████▄   ▄█████▄  ▄▄█████▄   ▄████▄    ██▄████           
-      ▀ ▄▄▄██  ██▀  ▀██     ██               ██▀  ▀██  ██    ██   ██▀      ██▀    ▀  ██▀   ██   ▀ ▄▄▄██  ██▄▄▄▄ ▀  ██▄▄▄▄██   ██▀               
-     ▄██▀▀▀██  ██    ██     ██               ██    ██  ██    ██   ██       ██        ██    ██  ▄██▀▀▀██   ▀▀▀▀██▄  ██▀▀▀▀▀▀   ██                
-     ██▄▄▄███  ███▄▄██▀  ▄▄▄██▄▄▄            ███▄▄██▀  ██▄▄▄███   ██       ▀██▄▄▄▄█  ██    ██  ██▄▄▄███  █▄▄▄▄▄██  ▀██▄▄▄▄█   ██                
-      ▀▀▀▀ ▀▀  ██ ▀▀▀    ▀▀▀▀▀▀▀▀            ██ ▀▀▀     ▀▀▀▀ ▀▀   ▀▀         ▀▀▀▀▀   ▀▀    ▀▀   ▀▀▀▀ ▀▀   ▀▀▀▀▀▀     ▀▀▀▀▀    ▀▀                
-               ██                            ██                                                                                                 
+    console.log(`%c
 
-    `);
-    
-    console.log(`%cversion: %c${info.version}`, 'color: #00a76b; font-weight: bold;', 'color: #ffffff;');
-    console.log(`%cauthor: %c${info.author}`, 'color: #00a76b; font-weight: bold;', 'color: #ffffff;');
-    console.log(`%ccompile time: %c${(performance.now() / 1000).toFixed(3)} seconds`, 'color: #00a76b; font-weight: bold;', 'color: #ffffff;');
-    console.log('%cAPI purchase loaded successfully', 'color: #00a76b; font-weight: bold;');
+                            ██                                                       ▄▄
+                            ▀▀                                                       ██
+      ▄█████▄  ██▄███▄    ████               ██▄███▄   ██    ██   ██▄████   ▄█████▄  ██▄████▄   ▄█████▄  ▄▄█████▄   ▄████▄
+      ▀ ▄▄▄██  ██▀  ▀██     ██               ██▀  ▀██  ██    ██   ██▀      ██▀    ▀  ██▀   ██   ▀ ▄▄▄██  ██▄▄▄▄ ▀  ██▄▄▄▄██
+     ▄██▀▀▀██  ██    ██     ██               ██    ██  ██    ██   ██       ██        ██    ██  ▄██▀▀▀██   ▀▀▀▀██▄  ██▀▀▀▀▀▀
+     ██▄▄▄███  ███▄▄██▀  ▄▄▄██▄▄▄            ███▄▄██▀  ██▄▄▄███   ██       ▀██▄▄▄▄█  ██    ██  ██▄▄▄███  █▄▄▄▄▄██  ▀██▄▄▄▄█
+      ▀▀▀▀ ▀▀  ██ ▀▀▀    ▀▀▀▀▀▀▀▀            ██ ▀▀▀     ▀▀▀▀ ▀▀   ▀▀         ▀▀▀▀▀   ▀▀    ▀▀   ▀▀▀▀ ▀▀   ▀▀▀▀▀▀     ▀▀▀▀▀
+               ██                            ██
+
+     %cversion:%c  ${info.version}                               %cauthor:%c  ${info.author}                               %cloaded in:%c  ${(performance.now() / 1000).toFixed(3)}s
+    `,
+        'color: #00a76b;',
+        'color: #ffffff; font-weight: bold; background: #00a76b; padding: 2px 6px; border-radius: 3px;', 'color: #ffffff;',
+        'color: #ffffff; font-weight: bold; background: #00a76b; padding: 2px 6px; border-radius: 3px;', 'color: #ffffff;',
+        'color: #ffffff; font-weight: bold; background: #00a76b; padding: 2px 6px; border-radius: 3px;', 'color: #ffffff;',
+    );
+
+    console.log('API purchase initialized, thanks for using this extension!')
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
