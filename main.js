@@ -40,7 +40,9 @@
     };
 
     const getCsrf = () => {
-        if (cachedCsrf) return cachedCsrf;
+        if (cachedCsrf) {
+            return cachedCsrf;
+        }
 
         for (const cookie of document.cookie.split(';')) {
             const [name, value] = cookie.trim().split('=');
@@ -112,7 +114,9 @@
                     headers: { accept: 'application/json, text/plain, */*' },
                 });
 
-                if (!response.ok) continue;
+                if (!response.ok) {
+                    continue;
+                }
 
                 const data = await response.json();
                 const currencyType = data.expectedCurrency ?? data.currencyType ?? data.CurrencyType;
@@ -181,7 +185,9 @@
 
         while (Date.now() < deadline) {
             if (window.turnstile?.render) {
-                if (!turnstileWidget) initializeTurnstile();
+                if (!turnstileWidget) {
+                    initializeTurnstile();
+                }
                 break;
             }
 
@@ -233,7 +239,9 @@
     // main
     const doHandshake = async (assetId) => {
         const token = await getOrFetchToken();
-        if (!token) throw new Error('ts token missing');
+        if (!token) {
+            throw new Error('ts token missing');
+        }
 
         const response = await fetch(
             `https://www.pekora.zip/apisite/economy/v1/purchases/products/${assetId}/handshake`,
@@ -254,7 +262,9 @@
             }
         );
 
-        if (!response.ok) throw new Error(`handshake failed: ${response.status}`);
+        if (!response.ok) {
+            throw new Error(`handshake failed: ${response.status}`);
+        }
 
         const data = await response.json();
         const ticket =
@@ -264,7 +274,9 @@
             data.token ||
             data.nonce;
 
-        if (!ticket) throw new Error(`no ticket: ${JSON.stringify(data)}`);
+        if (!ticket) {
+            throw new Error(`no ticket: ${JSON.stringify(data)}`);
+        }
 
         return ticket;
     };
@@ -377,21 +389,23 @@
 
     const purchase_button = () => {
         const itemId = getItemId();
-        if (!itemId) return false;
+        if (!itemId) {
+            return false;
+        }
 
-        if (document.querySelector('#yieldsponsoredbutton')) return true;
+        if (document.querySelector('#yieldsponsoredbutton')) {
+            return true;
+        }
 
         const buyButton = document.querySelector('button[class*="buyBtn"]');
-        if (
-            !buyButton ||
-            buyButton.disabled ||
-            buyButton.textContent.toLowerCase().includes('edit avatar')
-        ) {
+        if (!buyButton || buyButton.disabled || buyButton.textContent.toLowerCase().includes('edit avatar')) {
             return false;
         }
 
         const buttonContainer = buyButton.parentElement;
-        if (!buttonContainer) return false;
+        if (!buttonContainer) {
+            return false;
+        }
 
         prefetchToken();
 
@@ -441,7 +455,9 @@
         button.onclick = async (event) => {
             event.preventDefault();
 
-            if (button.disabled) return;
+            if (button.disabled) {
+                return;
+            }
 
             button.disabled = true;
             button.textContent = 'Processing...';
@@ -484,9 +500,13 @@
 
         let attempts = 0;
         const retry = () => {
-            if (!getItemId()) return;
+            if (!getItemId()) {
+                return;
+            }
 
-            if (purchase_button()) return;
+            if (purchase_button()) {
+                return;
+            }
 
             if (++attempts < 20) {
                 retryTimer = setTimeout(retry, 300);
@@ -497,11 +517,15 @@
     };
 
     const monitor_button = () => {
-        if (domObserver) domObserver.disconnect();
+        if (domObserver) {
+            domObserver.disconnect();
+        }
 
         let debounceTimer = null;
         domObserver = new MutationObserver(() => {
-            if (debounceTimer) return;
+            if (debounceTimer) {
+                return;
+            }
 
             debounceTimer = setTimeout(() => {
                 debounceTimer = null;
@@ -521,7 +545,9 @@
 
         const onNavigate = () => {
             const currentUrl = location.href;
-            if (currentUrl === lastUrl) return;
+            if (currentUrl === lastUrl) {
+                return;
+            }
 
             lastUrl = currentUrl;
 
