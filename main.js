@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         api purchase
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  direct api call for purchasing
 // @author       pythonplugin
 // @match        https://www.pekora.zip/*
@@ -16,7 +16,7 @@
     'use strict';
 
     const info = {
-        version: '2.0',
+        version: '2.1',
         author: '@pythonplugin',
     };
 
@@ -58,9 +58,7 @@
     };
 
     const getPrice = () => {
-        const label =
-            document.querySelector('.priceLabel-0-2-61') ||
-            document.querySelector('[class*="priceLabel"]');
+        const label = document.querySelector('.priceLabel-0-2-61') || document.querySelector('[class*="priceLabel"]');
 
         if (!label) {
             return 0;
@@ -68,6 +66,74 @@
 
         const cleaned = label.textContent.trim().replace(/[^\d]/g, '');
         return cleaned ? parseInt(cleaned, 10) : 0;
+    };
+
+    const getCurrency = async (itemId) => {
+        const label = document.querySelector('.priceLabel-0-2-61') || document.querySelector('[class*="priceLabel"]');
+        const buyButton = document.querySelector('button[class*="buyBtn"]');
+
+        const purchaseArea =
+            label?.parentElement?.parentElement ||
+            buyButton?.parentElement;
+
+        if (purchaseArea) {
+            for (const element of purchaseArea.querySelectorAll('*')) {
+                let currencyHint = [
+                    element.className,
+                    element.src,
+                    element.alt,
+                    element.getAttribute('data-currency'),
+                ].join(' ').toLowerCase();
+
+                try {
+                    currencyHint += getComputedStyle(element).backgroundImage.toLowerCase();
+                } catch {}
+
+                if (currencyHint.includes('tix') || currencyHint.includes('ticket')) {
+                    return 2;
+                }
+
+                if (currencyHint.includes('robux')) {
+                    return 1;
+                }
+            }
+        }
+
+        const apiUrls = [
+            `https://www.pekora.zip/apisite/economy/v1/assets/${itemId}/details`,
+            `https://www.pekora.zip/apisite/economy/v1/products/${itemId}`,
+            `https://www.pekora.zip/apisite/catalog/v1/catalog/items/${itemId}/details?itemType=Asset`,
+        ];
+
+        for (const apiUrl of apiUrls) {
+            try {
+                const response = await fetch(apiUrl, {
+                    credentials: 'include',
+                    headers: { accept: 'application/json, text/plain, */*' },
+                });
+
+                if (!response.ok) continue;
+
+                const data = await response.json();
+                const currencyType = data.expectedCurrency ?? data.currencyType ?? data.CurrencyType;
+
+                if (currencyType === 1 || currencyType === 2) {
+                    return currencyType;
+                }
+
+                if ((data.PriceInTickets ?? data.priceInTickets) > 0) {
+                    return 2;
+                }
+
+                if ((data.PriceInRobux ?? data.priceInRobux) > 0) {
+                    return 1;
+                }
+            } catch {
+                console.log("wow cool it failed")
+            }
+        }
+
+        return 1;
     };
 
     const getSellerId = () => {
@@ -252,6 +318,8 @@
     const purchase = async (itemId, price = 0) => {
         try {
             const sellerId = getSellerId();
+            
+            const currency = await getCurrency(itemId);
             const ticket = await doHandshake(itemId);
 
             const response = await fetch(
@@ -274,7 +342,7 @@
                         assetId: parseInt(itemId),
                         expectedPrice: price,
                         expectedSellerId: sellerId,
-                        expectedCurrency: 1,
+                        expectedCurrency: currency,
 
                         userAssetId: null,
                     }),
