@@ -1,4 +1,4 @@
-> requires [Tampermonkey](https://www.tampermonkey.net/) — [installation guide](https://www.youtube.com/watch?v=8tyjJD65zws)
+> requires [Tampermonkey](https://www.tampermonkey.net/) [installation guide](https://www.youtube.com/watch?v=8tyjJD65zws)
 
 ---
 
