@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         api purchase
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.2
 // @description  direct api call for purchasing
 // @author       pythonplugin
 // @match        https://www.pekora.zip/*
@@ -16,7 +16,7 @@
     'use strict';
 
     const info = {
-        version: '2.1',
+        version: '2.2',
         author: '@pythonplugin',
     };
 
@@ -152,42 +152,40 @@
         return 1;
     };
 
-    const initializeTurnstile = () => {
-        const container = document.createElement('div');
-        container.style.cssText = 'position: fixed; opacity: 0; pointer-events: none; z-index: -9999';
-
-        document.body.appendChild(container);
-
-        turnstileWidget = window.turnstile.render(container, {
-            sitekey: '0x4AAAAAADQcZgwHYAGOlwRV', // lol
-
-            appearance: 'execute',
-            execution: 'execute',
-
-            callback: (token) => {
-                if (turnstileCallback) {
-                    turnstileCallback(token);
-                    turnstileCallback = null;
-                }
-            },
-
-            'error-callback': () => {
-                if (turnstileCallback) {
-                    turnstileCallback(null);
-                    turnstileCallback = null;
-                }
-            },
-        });
-    };
-
-    const getTurnstileToken = async () => {
+    const getToken = async () => {
         const deadline = Date.now() + 8000;
 
         while (Date.now() < deadline) {
             if (window.turnstile?.render) {
                 if (!turnstileWidget) {
-                    initializeTurnstile();
+                    // turnstile init
+                    const container = document.createElement('div');
+                    container.style.cssText = 'position: fixed; opacity: 0; pointer-events: none; z-index: -9999';
+            
+                    document.body.appendChild(container);
+            
+                    turnstileWidget = window.turnstile.render(container, {
+                        sitekey: '0x4AAAAAADQcZgwHYAGOlwRV', // lol
+            
+                        appearance: 'execute',
+                        execution: 'execute',
+            
+                        callback: (token) => {
+                            if (turnstileCallback) {
+                                turnstileCallback(token);
+                                turnstileCallback = null;
+                            }
+                        },
+            
+                        'error-callback': () => {
+                            if (turnstileCallback) {
+                                turnstileCallback(null);
+                                turnstileCallback = null;
+                            }
+                        },
+                    });
                 }
+
                 break;
             }
 
@@ -212,7 +210,7 @@
     };
 
     const prefetchToken = () => {
-        tokenPromise = getTurnstileToken()
+        tokenPromise = getToken()
             .then(token => {
                 pendingToken = token;
                 return token;
@@ -221,19 +219,31 @@
             .catch(() => null);
     };
 
+    const resetToken = () => {
+        pendingToken = null;
+        tokenPromise = null;
+        turnstileCallback = null;
+
+        if (turnstileWidget && window.turnstile?.reset) {
+            window.turnstile.reset(turnstileWidget);
+        }
+
+        prefetchToken();
+    };
+
     const getOrFetchToken = async () => {
         if (pendingToken) {
             const token = pendingToken;
             pendingToken = null;
 
-            tokenPromise = getTurnstileToken()
+            tokenPromise = getToken()
                 .then(token => { pendingToken = token; return token; })
                 .catch(() => null);
 
             return token;
         }
 
-        return tokenPromise ?? getTurnstileToken();
+        return tokenPromise ?? getToken();
     };
 
     // main
@@ -377,12 +387,13 @@
                     location.reload(),
                     1500);
             } else {
-                notify(`API Purchase failed: ${data.reason || rawText}`, false);
+                resetToken();
+
+                notify(`API Purchase failed: ${data.errors?.[0]?.message || rawText}`, false);
             }
         } catch (error) {
-            pendingToken = null;
-            tokenPromise = null;
-            
+            resetToken();
+
             notify(`error: ${error.message}`, false);
         }
     };
@@ -591,7 +602,7 @@
             'color: #ffffff; font-weight: bold; background: #00a76b; padding: 2px 6px; border-radius: 3px;', 'color: #ffffff;',
         );
 
-        console.log('API purchase initialized, thanks for using this extension!')
+        console.log('API purchase initialized, thank you for using this extension!')
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => {
