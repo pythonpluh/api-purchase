@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         api purchase
 // @namespace    http://tampermonkey.net/
-// @version      2.2
+// @version      2.3
 // @description  direct api call for purchasing
 // @author       pythonplugin
 // @match        https://www.pekora.zip/*
 // @grant        none
 // @run-at       document-end
+// @require      https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit
 // @updateURL    https://raw.githubusercontent.com/pythonpluh/api-purchase/main/main.js
 // @downloadURL  https://raw.githubusercontent.com/pythonpluh/api-purchase/main/main.js
 // @homepageURL  https://github.com/pythonpluh/api-purchase
@@ -16,22 +17,47 @@
     'use strict';
 
     const info = {
-        version: '2.2',
+        version: '2.3',
         author: '@pythonplugin',
     };
 
-    let lastUrl = location.href;
+    const state = {
+        session: { 
+            lastUrl: location.href, 
+            cachedCsrf: null 
+        },
 
-    let domObserver = null;
-    let retryTimer = null;
+        dom: { 
+            observer: null, 
+            retryTimer: null 
+        },
 
-    let turnstileCallback = null;
-    let turnstileWidget = null;
+        turnstile: { 
+            widget: null, 
+            callback: null 
+        },
 
-    let pendingToken = null;
-    let tokenPromise = null;
+        token: { 
+            pending: null, 
+            promise: null, 
 
-    let cachedCsrf = null;
+            at: 0 
+        },
+
+        currency: { 
+            pending: null, 
+            promise: null 
+        },
+
+        ticket: { 
+            pending: null, 
+            promise: null,
+
+            at: 0, 
+
+            itemId: null 
+        },
+    };
 
     // helpers
     const getItemId = () => {
@@ -40,23 +66,23 @@
     };
 
     const getCsrf = () => {
-        if (cachedCsrf) {
-            return cachedCsrf;
+        if (state.session.cachedCsrf) {
+            return state.session.cachedCsrf;
         }
 
         for (const cookie of document.cookie.split(';')) {
             const [name, value] = cookie.trim().split('=');
-            
+
             if (name.toLowerCase().includes('csrf')) {
-                cachedCsrf = value;
+                state.session.cachedCsrf = value;
                 return value;
             }
         }
 
         const meta = document.querySelector('meta[name="csrf-token"]');
-        cachedCsrf = meta ? meta.getAttribute('content') : null;
+        state.session.cachedCsrf = meta ? meta.getAttribute('content') : null;
 
-        return cachedCsrf;
+        return state.session.cachedCsrf;
     };
 
     const getPrice = () => {
@@ -79,16 +105,30 @@
             buyButton?.parentElement;
 
         if (purchaseArea) {
-            for (const element of purchaseArea.querySelectorAll('*')) {
-                let currencyHint = [
+            const elements = purchaseArea.querySelectorAll('*');
+
+            for (const element of elements) {
+                const currencyHint = [
                     element.className,
                     element.src,
                     element.alt,
                     element.getAttribute('data-currency'),
                 ].join(' ').toLowerCase();
 
+                if (currencyHint.includes('tix') || currencyHint.includes('ticket')) {
+                    return 2;
+                }
+
+                if (currencyHint.includes('robux')) {
+                    return 1;
+                }
+            }
+
+            for (const element of elements) {
+                let currencyHint = '';
+
                 try {
-                    currencyHint += getComputedStyle(element).backgroundImage.toLowerCase();
+                    currencyHint = getComputedStyle(element).backgroundImage.toLowerCase();
                 } catch {}
 
                 if (currencyHint.includes('tix') || currencyHint.includes('ticket')) {
@@ -107,33 +147,36 @@
             `https://www.pekora.zip/apisite/catalog/v1/catalog/items/${itemId}/details?itemType=Asset`,
         ];
 
-        for (const apiUrl of apiUrls) {
-            try {
-                const response = await fetch(apiUrl, {
-                    credentials: 'include',
-                    headers: { accept: 'application/json, text/plain, */*' },
-                });
+        const results = await Promise.all(apiUrls.map(apiUrl =>
+            fetch(apiUrl, {
+                credentials: 'include',
+                headers: { accept: 'application/json, text/plain, */*' },
+            })
+                .then(r => r.ok ? r.json() : null)
 
-                if (!response.ok) {
-                    continue;
-                }
+                .catch(() => {
+                    console.log("wow cool it failed")
+                    return null;
+                })
+        ));
 
-                const data = await response.json();
-                const currencyType = data.expectedCurrency ?? data.currencyType ?? data.CurrencyType;
+        for (const data of results) {
+            if (!data) {
+                continue;
+            }
 
-                if (currencyType === 1 || currencyType === 2) {
-                    return currencyType;
-                }
+            const currencyType = data.expectedCurrency ?? data.currencyType ?? data.CurrencyType;
 
-                if ((data.PriceInTickets ?? data.priceInTickets) > 0) {
-                    return 2;
-                }
+            if (currencyType === 1 || currencyType === 2) {
+                return currencyType;
+            }
 
-                if ((data.PriceInRobux ?? data.priceInRobux) > 0) {
-                    return 1;
-                }
-            } catch {
-                console.log("wow cool it failed")
+            if ((data.PriceInTickets ?? data.priceInTickets) > 0) {
+                return 2;
+            }
+
+            if ((data.PriceInRobux ?? data.priceInRobux) > 0) {
+                return 1;
             }
         }
 
@@ -144,6 +187,7 @@
         const sellerLink = document.querySelector('a[href*="/User.aspx?ID="]');
         if (sellerLink) {
             const match = sellerLink.href.match(/ID=(\d+)/);
+
             if (match) {
                 return parseInt(match[1]);
             }
@@ -152,98 +196,256 @@
         return 1;
     };
 
-    const getToken = async () => {
-        const deadline = Date.now() + 8000;
-
+    const waitForTurnstile = async () => {
+        const deadline = Date.now() + 20000;
         while (Date.now() < deadline) {
-            if (window.turnstile?.render) {
-                if (!turnstileWidget) {
-                    // turnstile init
-                    const container = document.createElement('div');
-                    container.style.cssText = 'position: fixed; opacity: 0; pointer-events: none; z-index: -9999';
-            
-                    document.body.appendChild(container);
-            
-                    turnstileWidget = window.turnstile.render(container, {
-                        sitekey: '0x4AAAAAADQcZgwHYAGOlwRV', // lol
-            
-                        appearance: 'execute',
-                        execution: 'execute',
-            
-                        callback: (token) => {
-                            if (turnstileCallback) {
-                                turnstileCallback(token);
-                                turnstileCallback = null;
-                            }
-                        },
-            
-                        'error-callback': () => {
-                            if (turnstileCallback) {
-                                turnstileCallback(null);
-                                turnstileCallback = null;
-                            }
-                        },
-                    });
-                }
-
-                break;
+            if (window.turnstile?.render && window.turnstile?.execute) {
+                return true;
             }
 
-            await new Promise(resolve => setTimeout(resolve, 200));
+            await new Promise(r => setTimeout(r, 150));
         }
 
-        if (!turnstileWidget || !window.turnstile?.execute) {
+        return false;
+    };
+
+    const initWidget = () => {
+        if (state.turnstile.widget) {
+            return state.turnstile.widget;
+        }
+
+        // turnstile init
+        const container = document.createElement('div');
+        container.style.cssText = 'position: fixed; opacity: 0; pointer-events: none; z-index: -9999';
+        document.body.appendChild(container);
+
+        state.turnstile.widget = window.turnstile.render(container, {
+            sitekey: '0x4AAAAAADQcZgwHYAGOlwRV', // lol
+
+            appearance: 'execute',
+            execution: 'execute',
+
+            callback: (token) => {
+                if (state.turnstile.callback) {
+                    state.turnstile.callback(token);
+                    state.turnstile.callback = null;
+                }
+            },
+
+            'error-callback': () => {
+                if (state.turnstile.callback) {
+                    state.turnstile.callback(null);
+                    state.turnstile.callback = null;
+                }
+            },
+        });
+
+        return state.turnstile.widget;
+    };
+
+    const getToken = async () => {
+        const ready = await waitForTurnstile();
+        if (!ready) {
+            throw new Error('turnstile script never loaded');
+        }
+
+        initWidget();
+
+        if (!state.turnstile.widget || !window.turnstile?.execute) {
             throw new Error('turnstile not ready');
         }
 
         return new Promise((resolve, reject) => {
-            turnstileCallback = resolve;
-            window.turnstile.execute(turnstileWidget);
+            state.turnstile.callback = (token) => {
+                if (!token) {
+                    reject(new Error('turnstile returnd null'));
+                } else {
+                    resolve(token);
+                }
+            };
+
+            try {
+                window.turnstile.execute(state.turnstile.widget);
+            } catch (result) {
+                state.turnstile.callback = null;
+                reject(result);
+
+                return;
+            }
 
             setTimeout(() => {
-                if (turnstileCallback === resolve) {
-                    turnstileCallback = null;
+                if (state.turnstile.callback) {
+                    state.turnstile.callback = null;
                     reject(new Error('turnstile timeout'));
                 }
-            }, 8000);
+            }, 15000);
         });
     };
 
     const prefetchToken = () => {
-        tokenPromise = getToken()
+        if (state.token.pending && Date.now() - state.token.at >= 240000) {
+            state.token.pending = null;
+            state.token.at = 0;
+        }
+
+        if (state.token.promise || state.token.pending) {
+            return;
+        }
+
+        state.token.promise = getToken()
             .then(token => {
-                pendingToken = token;
+                state.token.pending = token;
+                state.token.at = Date.now();
+                
                 return token;
             })
 
-            .catch(() => null);
+            .catch(result => {
+                console.warn('prefetch failed:', result.message);
+                state.token.promise = null;
+
+                return null;
+            });
+    };
+
+    const prefetchCurrency = (itemId) => {
+        if (state.currency.promise || state.currency.pending) {
+            return;
+        }
+
+        state.currency.promise = getCurrency(itemId)
+            .then(currency => {
+                state.currency.pending = currency;
+                return currency;
+            })
+
+            .catch(result => {
+                console.warn('currency prefetch failed:', result.message);
+                state.currency.promise = null;
+
+                return null;
+            });
+    };
+
+    const getOrFetchCurrency = async (itemId) => {
+        if (state.currency.pending) {
+            const currency = state.currency.pending;
+            state.currency.pending = null;
+
+            return currency;
+        }
+
+        if (state.currency.promise) {
+            const currency = await state.currency.promise.catch(() => null);
+            state.currency.promise = null;
+
+            if (currency) {
+                return currency;
+            }
+        }
+
+        return await getCurrency(itemId);
+    };
+
+    const prefetchHandshake = (itemId) => {
+        if (state.ticket.pending && state.ticket.itemId === itemId && Date.now() - state.ticket.at >= 30000) {
+            state.ticket.pending = null;
+            state.ticket.at = 0;
+        }
+
+        if (state.ticket.promise || (state.ticket.pending && state.ticket.itemId === itemId)) {
+            return;
+        }
+
+        if (state.ticket.itemId !== itemId) {
+            state.ticket.pending = null;
+            state.ticket.at = 0;
+            state.ticket.promise = null;
+        }
+
+        state.ticket.itemId = itemId;
+
+        state.ticket.promise = doHandshake(itemId)
+            .then(ticket => {
+                state.ticket.pending = ticket;
+                state.ticket.at = Date.now();
+                return ticket;
+            })
+
+            .catch(result => {
+                console.warn('handshake prefetch failed:', result.message);
+                state.ticket.promise = null;
+
+                return null;
+            });
+    };
+
+    const getOrFetchTicket = async (itemId) => {
+        if (state.ticket.pending && state.ticket.itemId === itemId && Date.now() - state.ticket.at < 30000) {
+            const ticket = state.ticket.pending;
+            state.ticket.pending = null;
+            state.ticket.at = 0;
+
+            return ticket;
+        }
+
+        state.ticket.pending = null;
+        state.ticket.at = 0;
+
+        if (state.ticket.promise && state.ticket.itemId === itemId) {
+            const ticket = await state.ticket.promise.catch(() => null);
+            state.ticket.promise = null;
+
+            if (ticket) {
+                return ticket;
+            }
+        }
+
+        return await doHandshake(itemId);
     };
 
     const resetToken = () => {
-        pendingToken = null;
-        tokenPromise = null;
-        turnstileCallback = null;
+        state.token.pending = null;
+        state.token.promise = null;
+        state.token.at = 0;
+        state.ticket.pending = null;
+        state.ticket.promise = null;
+        state.ticket.at = 0;
+        state.turnstile.callback = null;
 
-        if (turnstileWidget && window.turnstile?.reset) {
-            window.turnstile.reset(turnstileWidget);
+        if (state.turnstile.widget && window.turnstile?.reset) {
+            try {
+                window.turnstile.reset(state.turnstile.widget);
+            } catch {}
         }
 
         prefetchToken();
     };
 
     const getOrFetchToken = async () => {
-        if (pendingToken) {
-            const token = pendingToken;
-            pendingToken = null;
+        if (state.token.pending && Date.now() - state.token.at < 240000) {
+            const token = state.token.pending;
+            state.token.pending = null;
+            state.token.at = 0;
 
-            tokenPromise = getToken()
-                .then(token => { pendingToken = token; return token; })
-                .catch(() => null);
-
+            prefetchToken();
+            
             return token;
         }
 
-        return tokenPromise ?? getToken();
+        state.token.pending = null;
+        state.token.at = 0;
+
+        if (state.token.promise) {
+            const token = await state.token.promise.catch(() => null);
+            state.token.promise = null;
+
+            if (token) {
+                return token;
+            }
+        }
+
+        return await getToken();
     };
 
     // main
@@ -259,6 +461,7 @@
                 method: 'POST',
                 mode: 'same-origin',
                 credentials: 'include',
+                priority: 'high',
 
                 headers: {
                     'accept': 'application/json, text/plain, */*',
@@ -340,21 +543,25 @@
     const purchase = async (itemId, price = 0) => {
         try {
             const sellerId = getSellerId();
-            
-            const currency = await getCurrency(itemId);
-            const ticket = await doHandshake(itemId);
 
+            const [currency, ticket] = await Promise.all([
+                getOrFetchCurrency(itemId),
+                getOrFetchTicket(itemId),
+            ]);
+            
             const response = await fetch(
                 `https://www.pekora.zip/apisite/economy/v1/purchases/products/${itemId}`,
                 {
                     method: 'POST',
                     mode: 'same-origin',
                     credentials: 'include',
+                    priority: 'high',
+                    keepalive: true,
 
                     headers: {
                         'accept': 'application/json, text/plain, */*',
                         'content-type': 'application/json;charset=UTF-8',
-                        'x-csrf-token': cachedCsrf || getCsrf(),
+                        'x-csrf-token': state.session.cachedCsrf || getCsrf(),
                         'x-korone-ticket': ticket,
                         'referer': location.href,
                         'origin': 'https://www.pekora.zip',
@@ -385,7 +592,7 @@
 
                 setTimeout(() =>
                     location.reload(),
-                    1500);
+                    300);
             } else {
                 resetToken();
 
@@ -419,6 +626,8 @@
         }
 
         prefetchToken();
+        prefetchCurrency(itemId);
+        prefetchHandshake(itemId);
 
         const button = document.createElement('button');
         button.id = 'yieldsponsoredbutton';
@@ -454,6 +663,9 @@
                 button.style.background = 'rgb(0, 132, 86)';
                 button.style.boxShadow = '0 3px 6px rgba(0, 0, 0, 0.25)';
             }
+
+            prefetchToken();
+            prefetchHandshake(itemId);
         };
 
         button.onmouseleave = () => {
@@ -504,9 +716,9 @@
     };
 
     const start_retry = () => {
-        if (retryTimer) {
-            clearTimeout(retryTimer);
-            retryTimer = null;
+        if (state.dom.retryTimer) {
+            clearTimeout(state.dom.retryTimer);
+            state.dom.retryTimer = null;
         }
 
         let attempts = 0;
@@ -520,7 +732,7 @@
             }
 
             if (++attempts < 20) {
-                retryTimer = setTimeout(retry, 300);
+                state.dom.retryTimer = setTimeout(retry, 300);
             }
         };
 
@@ -528,12 +740,12 @@
     };
 
     const monitor_button = () => {
-        if (domObserver) {
-            domObserver.disconnect();
+        if (state.dom.observer) {
+            state.dom.observer.disconnect();
         }
 
         let debounceTimer = null;
-        domObserver = new MutationObserver(() => {
+        state.dom.observer = new MutationObserver(() => {
             if (debounceTimer) {
                 return;
             }
@@ -547,7 +759,7 @@
             }, 50);
         });
 
-        domObserver.observe(document.body, { childList: true, subtree: true });
+        state.dom.observer.observe(document.body, { childList: true, subtree: true });
     };
 
     const history_navigation = () => {
@@ -556,16 +768,25 @@
 
         const onNavigate = () => {
             const currentUrl = location.href;
-            if (currentUrl === lastUrl) {
+            if (currentUrl === state.session.lastUrl) {
                 return;
             }
 
-            lastUrl = currentUrl;
+            state.session.lastUrl = currentUrl;
 
-            pendingToken = null;
-            tokenPromise = null;
-            
-            cachedCsrf = null;
+            state.token.pending = null;
+            state.token.promise = null;
+            state.token.at = 0;
+
+            state.currency.pending = null;
+            state.currency.promise = null;
+
+            state.ticket.pending = null;
+            state.ticket.promise = null;
+            state.ticket.itemId = null;
+            state.ticket.at = 0;
+
+            state.session.cachedCsrf = null;
         };
 
         history.pushState = function (...args) {
