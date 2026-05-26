@@ -152,7 +152,7 @@
                 credentials: 'include',
                 headers: { accept: 'application/json, text/plain, */*' },
             })
-                .then(r => r.ok ? r.json() : null)
+                .then(result => result.ok ? result.json() : null)
 
                 .catch(() => {
                     console.log("wow cool it failed")
