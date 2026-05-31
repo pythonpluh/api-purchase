@@ -1,8 +1,6 @@
 [Tampermonkey](https://www.tampermonkey.net/) 
 [installation guide](https://www.youtube.com/watch?v=8tyjJD65zws)
 
-> ⚠️ **violentmonkey is not supported**
-
 ---
 
 ## what does this extension do?
