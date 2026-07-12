@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         api purchase
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.4
 // @description  direct api call for purchasing
 // @author       pythonplugin
 // @match        https://www.pekora.zip/*
@@ -17,7 +17,7 @@
     'use strict';
 
     const info = {
-        version: '2.3',
+        version: '2.4',
         author: '@pythonplugin',
     };
 
@@ -141,45 +141,6 @@
             }
         }
 
-        const apiUrls = [
-            `https://www.pekora.zip/apisite/economy/v1/assets/${itemId}/details`,
-            `https://www.pekora.zip/apisite/economy/v1/products/${itemId}`,
-            `https://www.pekora.zip/apisite/catalog/v1/catalog/items/${itemId}/details?itemType=Asset`,
-        ];
-
-        const results = await Promise.all(apiUrls.map(apiUrl =>
-            fetch(apiUrl, {
-                credentials: 'include',
-                headers: { accept: 'application/json, text/plain, */*' },
-            })
-                .then(result => result.ok ? result.json() : null)
-
-                .catch(() => {
-                    console.log("wow cool it failed")
-                    return null;
-                })
-        ));
-
-        for (const data of results) {
-            if (!data) {
-                continue;
-            }
-
-            const currencyType = data.expectedCurrency ?? data.currencyType ?? data.CurrencyType;
-
-            if (currencyType === 1 || currencyType === 2) {
-                return currencyType;
-            }
-
-            if ((data.PriceInTickets ?? data.priceInTickets) > 0) {
-                return 2;
-            }
-
-            if ((data.PriceInRobux ?? data.priceInRobux) > 0) {
-                return 1;
-            }
-        }
-
         return 1;
     };
 
@@ -243,7 +204,7 @@
         return state.turnstile.widget;
     };
 
-    const getToken = async () => {
+    const requestToken = async () => {
         const ready = await waitForTurnstile();
         if (!ready) {
             throw new Error('turnstile script never loaded');
@@ -256,7 +217,7 @@
         }
 
         return new Promise((resolve, reject) => {
-            state.turnstile.callback = (token) => {
+            const myCallback = (token) => {
                 if (!token) {
                     reject(new Error('turnstile returnd null'));
                 } else {
@@ -264,7 +225,13 @@
                 }
             };
 
+            state.turnstile.callback = myCallback;
+
             try {
+                try {
+                    window.turnstile.reset(state.turnstile.widget);
+                } catch {}
+
                 window.turnstile.execute(state.turnstile.widget);
             } catch (result) {
                 state.turnstile.callback = null;
@@ -274,15 +241,33 @@
             }
 
             setTimeout(() => {
-                if (state.turnstile.callback) {
+                if (state.turnstile.callback === myCallback) {
                     state.turnstile.callback = null;
-                    reject(new Error('turnstile timeout'));
                 }
+
+                reject(new Error('turnstile timeout'));
             }, 15000);
         });
     };
 
+    let tokenInflight = null;
+    const getToken = () => {
+        if (tokenInflight) {
+            return tokenInflight;
+        }
+
+        tokenInflight = requestToken().finally(() => {
+            tokenInflight = null;
+        });
+
+        return tokenInflight;
+    };
+
     const prefetchToken = () => {
+        if (document.hidden) {
+            return;
+        }
+
         if (state.token.pending && Date.now() - state.token.at >= 240000) {
             state.token.pending = null;
             state.token.at = 0;
@@ -296,7 +281,8 @@
             .then(token => {
                 state.token.pending = token;
                 state.token.at = Date.now();
-                
+                state.token.promise = null;
+
                 return token;
             })
 
@@ -348,7 +334,11 @@
     };
 
     const prefetchHandshake = (itemId) => {
-        if (state.ticket.pending && state.ticket.itemId === itemId && Date.now() - state.ticket.at >= 30000) {
+        if (document.hidden) {
+            return;
+        }
+
+        if (state.ticket.pending && state.ticket.itemId === itemId && Date.now() - state.ticket.at >= 20000) {
             state.ticket.pending = null;
             state.ticket.at = 0;
         }
@@ -369,6 +359,8 @@
             .then(ticket => {
                 state.ticket.pending = ticket;
                 state.ticket.at = Date.now();
+                state.ticket.promise = null;
+
                 return ticket;
             })
 
@@ -408,9 +400,11 @@
         state.token.pending = null;
         state.token.promise = null;
         state.token.at = 0;
+
         state.ticket.pending = null;
         state.ticket.promise = null;
         state.ticket.at = 0;
+        
         state.turnstile.callback = null;
 
         if (state.turnstile.widget && window.turnstile?.reset) {
@@ -449,7 +443,7 @@
     };
 
     // main
-    const doHandshake = async (assetId) => {
+    const doHandshake = async (assetId, retry = true) => {
         const token = await getOrFetchToken();
         if (!token) {
             throw new Error('ts token missing');
@@ -476,6 +470,16 @@
         );
 
         if (!response.ok) {
+            if (retry && (response.status === 400 || response.status === 403)) {
+                state.token.pending = null;
+                state.token.promise = null;
+                state.token.at = 0;
+                
+                state.session.cachedCsrf = null;
+
+                return doHandshake(assetId, false);
+            }
+
             throw new Error(`handshake failed: ${response.status}`);
         }
 
@@ -620,6 +624,11 @@
             return false;
         }
 
+        const buttonText = buyButton.textContent.trim().toLowerCase();
+        if (buttonText === 'back' || buttonText === 'home') {
+            return false;
+        }
+
         const buttonContainer = buyButton.parentElement;
         if (!buttonContainer) {
             return false;
@@ -675,7 +684,9 @@
             }
         };
 
-        button.onclick = async (event) => {
+        button.onclick = (event) => event.preventDefault();
+
+        button.onpointerdown = async (event) => {
             event.preventDefault();
 
             if (button.disabled) {
@@ -753,7 +764,15 @@
             debounceTimer = setTimeout(() => {
                 debounceTimer = null;
 
-                if (getItemId() && !document.querySelector('#yieldsponsoredbutton')) {
+                const existing = document.querySelector('#yieldsponsoredbutton');
+                const buyButton = document.querySelector('button[class*="buyBtn"]');
+
+                if (existing && (!getItemId() || !buyButton || existing.parentElement !== buyButton.parentElement)) {
+                    existing.remove();
+                    return;
+                }
+
+                if (getItemId() && !existing) {
                     purchase_button();
                 }
             }, 50);
@@ -834,6 +853,18 @@
             start_retry();
             monitor_button();
         }
+
+        const warmup = () => {
+            const itemId = getItemId();
+
+            if (!document.hidden && itemId && document.querySelector('#yieldsponsoredbutton')) {
+                prefetchToken();
+                prefetchHandshake(itemId);
+            }
+        };
+
+        document.addEventListener('visibilitychange', warmup);
+        setInterval(warmup, 20000);
 
         history_navigation();
     };
