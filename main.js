@@ -689,7 +689,7 @@
         button.onpointerdown = async (event) => {
             event.preventDefault();
 
-            if (button.disabled) {
+            if (button.disabled || event.button !== 0) {
                 return;
             }
 
